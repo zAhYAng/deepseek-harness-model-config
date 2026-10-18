@@ -46,13 +46,13 @@ Model parameters are usually filled in automatically, as long as [https://models
 Install and run `dsh`, then install from GitHub by default:
 
 ```sh
-dsh plugin --profile web add github:MarvekG/deepseek-harness-model-config
+dsh plugin --profile web add github:zAhYAng/deepseek-harness-model-config
 dsh web
 ```
 
 Open **Settings → Advanced model config** in the Web UI to create endpoints or edit existing `llm-pi-ai` model configuration.
 
-For a reproducible version, append a commit SHA to the repository address, such as `github:MarvekG/deepseek-harness-model-config#<sha>`.
+For a reproducible version, append a commit SHA to the repository address, such as `github:zAhYAng/deepseek-harness-model-config#<sha>`.
 
 ## Local Debugging
 
@@ -77,7 +77,7 @@ Update by removing the old version and adding the new one:
 
 ```sh
 dsh plugin --profile web remove dsh-models-config-plugin
-dsh plugin --profile web add github:MarvekG/deepseek-harness-model-config
+dsh plugin --profile web add github:zAhYAng/deepseek-harness-model-config
 dsh web
 ```
 

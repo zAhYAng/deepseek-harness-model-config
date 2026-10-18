@@ -46,13 +46,13 @@ Provider ID（如 `acme-gateway`）、显示名称、BASE_URL、API-KEY，然后
 需要已安装并可运行的 `dsh`。默认从 GitHub 安装：
 
 ```sh
-dsh plugin --profile web add github:MarvekG/deepseek-harness-model-config
+dsh plugin --profile web add github:zAhYAng/deepseek-harness-model-config
 dsh web
 ```
 
 打开 Web UI 的“设置 → 模型高级配置”，即可新增端点或编辑现有 `llm-pi-ai` 模型配置。
 
-如需固定版本，在仓库地址后附加 commit SHA，例如 `github:MarvekG/deepseek-harness-model-config#<sha>`。
+如需固定版本，在仓库地址后附加 commit SHA，例如 `github:zAhYAng/deepseek-harness-model-config#<sha>`。
 
 ## 本地调试
 
@@ -77,7 +77,7 @@ dsh plugin --profile web remove dsh-models-config-plugin
 
 ```sh
 dsh plugin --profile web remove dsh-models-config-plugin
-dsh plugin --profile web add github:MarvekG/deepseek-harness-model-config
+dsh plugin --profile web add github:zAhYAng/deepseek-harness-model-config
 dsh web
 ```
 
