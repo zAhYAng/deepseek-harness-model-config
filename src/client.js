@@ -180,6 +180,10 @@ window.__ModuleLoader__.load({
       metadataDefault: 'Default provider: {provider} ({context}/{output})',
       metadataOfficial: 'Official provider: {provider} ({context}/{output})',
       metadataProvider: '{provider} ({context}/{output})',
+      syncCapabilities: 'Sync capabilities',
+      syncingCapabilities: 'Syncing…',
+      syncCapabilitiesHint: 'Re-read models.dev metadata and overwrite the selected models\' context window, maximum output, input modalities, and reasoning levels.',
+      capabilitiesSynced: 'Synced capabilities for {matched} of {total} selected models; {unmatched} had no models.dev record.',
       reasoningInvalid: 'Reasoning efforts must be false or an effort list.',
       reasoningEmpty: 'A declared reasoning list needs at least one effort.',
       reasoningOffOnly: 'A list with only off has no usable reasoning effort.',
@@ -324,6 +328,10 @@ window.__ModuleLoader__.load({
       metadataDefault: '默认 provider：{provider}（{context}/{output}）',
       metadataOfficial: '官方 provider：{provider}（{context}/{output}）',
       metadataProvider: '{provider}（{context}/{output}）',
+      syncCapabilities: '同步模型能力',
+      syncingCapabilities: '同步中…',
+      syncCapabilitiesHint: '重新读取 models.dev 元数据，覆盖已选模型的上下文窗口、最大输出、输入模态和推理级别。',
+      capabilitiesSynced: '已同步 {matched}/{total} 个已选模型的能力参数；{unmatched} 个没有 models.dev 记录。',
       reasoningInvalid: '推理强度必须是 false 或级别列表。',
       reasoningEmpty: '已声明推理强度时至少选择一个级别。',
       reasoningOffOnly: '仅声明关闭级别没有可用的推理强度。',
@@ -365,9 +373,12 @@ window.__ModuleLoader__.load({
       borderColor: 'transparent',
     }
 
-    function loadModelsDevMetadata() {
+    // `force` bypasses both the in-memory promise and the HTTP cache, so the
+    // manual "sync capabilities" action really re-reads models.dev.
+    function loadModelsDevMetadata({ force = false } = {}) {
+      if (force) modelsDevMetadataPromise = undefined
       if (modelsDevMetadataPromise === undefined) {
-        modelsDevMetadataPromise = fetch(MODELS_DEV_METADATA_URL, { cache: 'force-cache' }).then(async response => {
+        modelsDevMetadataPromise = fetch(MODELS_DEV_METADATA_URL, { cache: force ? 'reload' : 'force-cache' }).then(async response => {
           if (!response.ok) throw new Error(`models.dev returned HTTP ${response.status}`)
           return response.json()
         }).catch(error => {
@@ -577,6 +588,28 @@ window.__ModuleLoader__.load({
         ...input.length > 0 ? { input } : {},
         ...reasoningEfforts === undefined ? {} : { reasoningEfforts },
       }
+    }
+
+    // Manual capability sync: re-read models.dev metadata for every selected
+    // model and overwrite the fields enrichment owns. Discovery applies these
+    // automatically, but an endpoint opened from stored settings starts without
+    // a match, so this is the explicit way to materialize them again.
+    function syncModelMetadata(models, drafts, metadata, selections = {}) {
+      const nextDrafts = {}
+      const matches = {}
+      const nextSelections = {}
+      let matched = 0
+      for (const model of models) {
+        const draft = drafts[model.id] ?? { ...model }
+        const match = metadataMatchForModel(metadata, draft)
+        if (match === undefined || match.reason === 'none') continue
+        const selection = retainedMetadataSelection(match, selections[model.id])
+        nextDrafts[model.id] = enrichDiscoveredModel(draft, match, selection, true)
+        matches[model.id] = { ...match, selection }
+        nextSelections[model.id] = selection
+        matched += 1
+      }
+      return { drafts: nextDrafts, matches, selections: nextSelections, matched }
     }
 
     function messageOf(error) {
@@ -1230,6 +1263,8 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false)
       const [failure, setFailure] = useState(undefined)
       const [metadataNotice, setMetadataNotice] = useState(undefined)
+      const [syncNotice, setSyncNotice] = useState(undefined)
+      const [syncing, setSyncing] = useState(false)
       const [settingsSaved, setSettingsSaved] = useState(false)
       const [advanced, setAdvanced] = useState({ ...initialAdvanced })
       const route = editing ? provider : endpoint.id
@@ -1285,6 +1320,7 @@ window.__ModuleLoader__.load({
         setEndpoint(current => ({ ...current, [field]: value }))
         setMetadataMatches({})
         setMetadataSelections({})
+        setSyncNotice(undefined)
         if (!editing) {
           setCandidates(undefined)
           setSelected(new Set())
@@ -1297,6 +1333,7 @@ window.__ModuleLoader__.load({
         setBusy(true)
         setFailure(undefined)
         setMetadataNotice(undefined)
+        setSyncNotice(undefined)
         try {
           const selectedBeforeFetch = new Set(selected)
           const draftsBeforeFetch = modelDrafts
@@ -1411,6 +1448,39 @@ window.__ModuleLoader__.load({
         }).catch(() => setMetadataNotice(t('metadataUnavailable')))
         return false
       }
+      // Manual fallback for the automatic enrichment: re-read models.dev for the
+      // current selection and overwrite the capability fields it owns. Explicit
+      // user edits survive only until this button is pressed again.
+      const syncModelCapabilities = () => {
+        if (syncing || selectedModels.length === 0) return
+        setSyncing(true)
+        setFailure(undefined)
+        setMetadataNotice(undefined)
+        setSyncNotice(undefined)
+        const targets = selectedModels
+        const apply = metadata => {
+          const result = syncModelMetadata(targets, modelDrafts, metadata, metadataSelections)
+          if (result.matched > 0) {
+            setModelDrafts(current => ({ ...current, ...result.drafts }))
+            setMetadataMatches(current => ({ ...current, ...result.matches }))
+            setMetadataSelections(current => ({ ...current, ...result.selections }))
+          }
+          setSyncNotice(t('capabilitiesSynced', {
+            matched: result.matched,
+            total: targets.length,
+            unmatched: targets.length - result.matched,
+          }))
+        }
+        if (modelsDevMetadata !== undefined) {
+          apply(modelsDevMetadata)
+          setSyncing(false)
+          return
+        }
+        loadModelsDevMetadata({ force: true }).then(metadata => {
+          setModelsDevMetadata(metadata)
+          apply(metadata)
+        }).catch(() => setSyncNotice(t('metadataUnavailable'))).finally(() => setSyncing(false))
+      }
       const addManualModel = () => {
         const id = manualModelId.trim()
         if (id === '') return
@@ -1429,6 +1499,7 @@ window.__ModuleLoader__.load({
         withModelsDevMetadata(metadata => applyModelMetadata(model, metadata))
       }
       const updateSelectedModel = (id, next) => {
+        setSyncNotice(undefined)
         const previous = modelDrafts[id] ?? candidates?.find(model => model.id === id)
         const displayNameChanged = modelDisplayName(previous) !== modelDisplayName(next)
         if (!displayNameChanged) {
@@ -1454,6 +1525,7 @@ window.__ModuleLoader__.load({
         withModelsDevMetadata(rematch)
       }
       const chooseMetadataSelection = (id, selection) => {
+        setSyncNotice(undefined)
         const match = metadataMatches[id]
         if (match === undefined || match.candidate === undefined) return
         const previousSelection = metadataSelections[id] ?? match.selection
@@ -1655,7 +1727,16 @@ window.__ModuleLoader__.load({
               }),
           ),
           selectedModels.length === 0 ? null : h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
-            h('strong', { style: { fontSize: '13px' } }, t('selectedModelParameters')),
+            h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' } },
+              h('strong', { style: { fontSize: '13px' } }, t('selectedModelParameters')),
+              h('button', {
+                type: 'button', style: buttonStyle,
+                disabled: busy || settingsSaved || syncing,
+                title: t('syncCapabilitiesHint'),
+                onClick: syncModelCapabilities,
+              }, syncing ? t('syncingCapabilities') : t('syncCapabilities')),
+            ),
+            syncNotice === undefined ? null : h('p', { style: { margin: 0, color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px' } }, syncNotice),
             selectedModels.map((model, index) => {
               const match = metadataMatches[model.id]
               const defaultProvider = match?.reason === 'default'

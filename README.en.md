@@ -15,6 +15,7 @@ Adds an Advanced Model Configuration page to the [DeepSeek Harness](https://gith
 - Use the same editor for new and saved endpoints; saved endpoints can refresh models, new models start unchecked, and checked models remain selected after a refresh.
 - Endpoint advanced parameters cover default capacities, input modalities, reasoning compatibility, caching, transport, timeouts, and retry policies.
 - Completes missing context windows, maximum output, input modalities, and reasoning capabilities from `models.dev`; it first selects the official provider implied by the display name (falling back to the model ID), then falls back to the default provider record, with whole-record switching available before saving.
+- The selected-model parameter area has a **Sync capabilities** button that re-reads `models.dev` metadata for the current model IDs or display names and overwrites the context window, maximum output, input modalities, and reasoning levels, so a saved endpoint can be re-enriched without editing a display name.
 - Preserves the exact display-name spelling returned by the endpoint or entered by the user, and rematches metadata providers after a display-name edit.
 - Edit each selected model's capacity, text/image input support, and `reasoningEfforts`; review a configuration preview before saving.
 - Chinese and English UI copy follows the Harness language setting.

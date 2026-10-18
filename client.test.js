@@ -10,7 +10,7 @@ async function loadMetadataHelpers() {
   const source = await readFile(clientPath, 'utf8')
   const instrumented = source.replace(
     '    return { inject, apply }',
-    '    return { inject, apply, __test: { enrichDiscoveredModel, metadataCandidateForDiscovery, metadataMatchForModel, modelDisplayName, modelMatchesSearch, selectedModelsMissingFromDiscovery, sortCandidatesForDisplay, isAliyunEndpoint, effectiveCompat, credentialKeyRef, PROVIDER_ID_PATTERN } }',
+    '    return { inject, apply, __test: { enrichDiscoveredModel, metadataCandidateForDiscovery, metadataMatchForModel, modelDisplayName, modelMatchesSearch, selectedModelsMissingFromDiscovery, sortCandidatesForDisplay, isAliyunEndpoint, effectiveCompat, credentialKeyRef, PROVIDER_ID_PATTERN, syncModelMetadata } }',
   )
   let definition
   vm.runInNewContext(instrumented, {
@@ -175,4 +175,70 @@ test('provider IDs accept exactly the official lowercase-hyphenated grammar', as
   assert.equal(PROVIDER_ID_PATTERN.test('acme--gateway'), false)
   assert.equal(PROVIDER_ID_PATTERN.test('acme-'), false)
   assert.equal(PROVIDER_ID_PATTERN.test('acme_gateway'), false)
+})
+
+test('manual capability sync overwrites stale model capabilities', async () => {
+  const { syncModelMetadata } = await loadMetadataHelpers()
+  const metadata = {
+    openai: {
+      id: 'openai',
+      models: {
+        'GPT-5': {
+          limit: { context: 400000, output: 128000 },
+          modalities: { input: ['text', 'image'] },
+          reasoning: true,
+          reasoning_options: [{ type: 'effort', values: ['low', 'high'] }],
+        },
+      },
+    },
+  }
+  const model = { id: 'gateway-model', name: 'GPT-5', contextWindow: 1, maxTokens: 1, input: ['text'] }
+  const result = syncModelMetadata([model], { [model.id]: model }, metadata)
+
+  assert.equal(result.matched, 1)
+  assert.equal(result.drafts[model.id].contextWindow, 400000)
+  assert.equal(result.drafts[model.id].maxTokens, 128000)
+  assert.deepEqual(result.drafts[model.id].input, ['text', 'image'])
+  assert.deepEqual(result.drafts[model.id].reasoningEfforts, { low: 'low', high: 'high' })
+  assert.equal(result.matches[model.id].officialProvider, 'openai')
+  assert.equal(result.selections[model.id], 'provider:openai')
+  // The stored model object is replaced, never mutated in place.
+  assert.equal(model.contextWindow, 1)
+  assert.deepEqual(model.input, ['text'])
+})
+
+test('manual capability sync leaves models without a metadata record untouched', async () => {
+  const { syncModelMetadata } = await loadMetadataHelpers()
+  const metadata = {
+    openai: { id: 'openai', models: { 'GPT-5': { limit: { context: 400000, output: 128000 } } } },
+  }
+  const matched = { id: 'gateway-model', name: 'GPT-5' }
+  const unmatched = { id: 'private-model', name: 'private-model', contextWindow: 42 }
+  const result = syncModelMetadata(
+    [matched, unmatched],
+    { [matched.id]: matched, [unmatched.id]: unmatched },
+    metadata,
+  )
+
+  assert.equal(result.matched, 1)
+  assert.equal(result.drafts[unmatched.id], undefined)
+  assert.equal(result.matches[unmatched.id], undefined)
+  assert.equal(unmatched.contextWindow, 42)
+})
+
+test('manual capability sync keeps a still-valid provider selection', async () => {
+  const { syncModelMetadata } = await loadMetadataHelpers()
+  const metadata = {
+    alpha: { id: 'alpha', models: { 'Model-X': { limit: { context: 10, output: 5 } } } },
+    beta: { id: 'beta', models: { 'Model-X': { limit: { context: 20, output: 8 } } } },
+  }
+  const model = { id: 'Model-X' }
+  const kept = syncModelMetadata([model], { [model.id]: model }, metadata, { [model.id]: 'provider:beta' })
+  assert.equal(kept.selections[model.id], 'provider:beta')
+  assert.equal(kept.drafts[model.id].contextWindow, 20)
+
+  // A provider that disappeared from models.dev falls back to the ranked default.
+  const fallback = syncModelMetadata([model], { [model.id]: model }, metadata, { [model.id]: 'provider:gone' })
+  assert.notEqual(fallback.selections[model.id], 'provider:gone')
+  assert.equal(fallback.drafts[model.id].contextWindow, 10)
 })
