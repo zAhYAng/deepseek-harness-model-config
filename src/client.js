@@ -190,10 +190,11 @@ window.__ModuleLoader__.load({
       approximateRow: '{model} → {provider} ({context}/{output})',
       approximateConfirm: 'Apply',
       approximateCancelled: 'Approximate matches dismissed; nothing was applied.',
-      syncCapabilities: 'Sync capabilities',
+      syncModelCapabilities: 'Fetch capabilities',
+      syncModelCapabilitiesHint: 'Re-read models.dev metadata for this model only and fill its context window, maximum output, input modalities, and reasoning levels. Approximate matches ask first.',
       syncingCapabilities: 'Syncing…',
-      syncCapabilitiesHint: 'Re-read models.dev metadata. Exact matches apply directly; approximate ones (model family or canonical link) ask for confirmation first.',
       capabilitiesSynced: 'Synced capabilities for {matched} of {total} selected models; {unmatched} had no models.dev record.',
+      capabilitiesSyncedOne: 'Fetched this model\'s capabilities from {provider}.',
       reasoningInvalid: 'Reasoning efforts must be false or an effort list.',
       reasoningEmpty: 'A declared reasoning list needs at least one effort.',
       reasoningOffOnly: 'A list with only off has no usable reasoning effort.',
@@ -345,10 +346,11 @@ window.__ModuleLoader__.load({
       approximateRow: '{model} → {provider}（{context}/{output}）',
       approximateConfirm: '确认应用',
       approximateCancelled: '已取消近似匹配，未应用任何更改。',
-      syncCapabilities: '同步模型能力',
+      syncModelCapabilities: '获取参数',
+      syncModelCapabilitiesHint: '只针对这个模型重新读取 models.dev 元数据，填入上下文、输出、输入能力和推理级别；近似匹配会先确认。',
       syncingCapabilities: '同步中…',
-      syncCapabilitiesHint: '重新读取 models.dev 元数据：精确匹配直接应用；近似匹配（按模型家族或 canonical 链接推断）会先弹窗确认。',
       capabilitiesSynced: '已同步 {matched}/{total} 个已选模型的能力参数；{unmatched} 个没有 models.dev 记录。',
+      capabilitiesSyncedOne: '已从 {provider} 获取该模型的能力参数。',
       reasoningInvalid: '推理强度必须是 false 或级别列表。',
       reasoningEmpty: '已声明推理强度时至少选择一个级别。',
       reasoningOffOnly: '仅声明关闭级别没有可用的推理强度。',
@@ -1306,7 +1308,8 @@ window.__ModuleLoader__.load({
 
     function ModelRow({
       model, index, onChange, disabled, lockId = false,
-      api, metadataChoice, metadataCandidates = [], metadataDefaultProvider, metadataOfficialProvider, onMetadataChoice, t,
+      api, metadataChoice, metadataCandidates = [], metadataDefaultProvider, metadataOfficialProvider, onMetadataChoice,
+      onSyncCapabilities, syncing, t,
     }) {
       const patch = changes => {
         const next = { ...model, ...changes }
@@ -1388,6 +1391,14 @@ window.__ModuleLoader__.load({
             h('input', { type: 'checkbox', checked: inputs.includes(modality), disabled, onChange: () => toggleInput(modality) }),
             modality === 'text' ? t('inputText') : t('inputImage'),
           ))),
+        ),
+        h('div', { style: { display: 'flex', justifyContent: 'flex-end' } },
+          h('button', {
+            type: 'button', style: buttonStyle,
+            disabled: disabled || syncing,
+            title: t('syncModelCapabilitiesHint'),
+            onClick: () => onSyncCapabilities?.(),
+          }, syncing ? t('syncingCapabilities') : t('syncModelCapabilities')),
         ),
         h(ReasoningEditor, {
           value: model.reasoningEfforts,
@@ -1620,30 +1631,31 @@ window.__ModuleLoader__.load({
         }).catch(() => setMetadataNotice(t('metadataUnavailable')))
         return false
       }
-      // Manual fallback for the automatic enrichment: re-read models.dev for the
-      // current selection and overwrite the capability fields it owns. Exact
-      // records apply immediately; approximate (family/canonical) records wait
-      // for an explicit confirmation.
+      // Manual fallback for the automatic enrichment, scoped to the models the
+      // caller names (one card, or the whole selection). Exact records apply
+      // immediately; approximate (family/canonical) records wait for a confirm.
       const commitSync = result => {
         if (result.matched > 0) {
           setModelDrafts(current => ({ ...current, ...result.drafts }))
           setMetadataMatches(current => ({ ...current, ...result.matches }))
           setMetadataSelections(current => ({ ...current, ...result.selections }))
         }
-        setSyncNotice(t('capabilitiesSynced', {
-          matched: result.matched,
-          total: result.total,
-          unmatched: result.total - result.matched,
-        }))
+        const provider = result.entries[0]?.selection?.replace('provider:', '')
+        setSyncNotice(result.total === 1 && result.matched === 1 && provider !== undefined
+          ? t('capabilitiesSyncedOne', { provider })
+          : t('capabilitiesSynced', {
+            matched: result.matched,
+            total: result.total,
+            unmatched: result.total - result.matched,
+          }))
       }
-      const syncModelCapabilities = () => {
-        if (syncing || selectedModels.length === 0) return
+      const runCapabilitySync = targets => {
+        if (syncing || targets.length === 0) return
         setSyncing(true)
         setFailure(undefined)
         setMetadataNotice(undefined)
         setSyncNotice(undefined)
         setPendingSync(undefined)
-        const targets = selectedModels
         const apply = metadata => {
           const result = {
             ...syncModelMetadata(targets, modelDrafts, metadata, metadataSelections),
@@ -1914,12 +1926,6 @@ window.__ModuleLoader__.load({
           selectedModels.length === 0 ? null : h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
             h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' } },
               h('strong', { style: { fontSize: '13px' } }, t('selectedModelParameters')),
-              h('button', {
-                type: 'button', style: buttonStyle,
-                disabled: busy || settingsSaved || syncing,
-                title: t('syncCapabilitiesHint'),
-                onClick: syncModelCapabilities,
-              }, syncing ? t('syncingCapabilities') : t('syncCapabilities')),
             ),
             syncNotice === undefined ? null : h('p', { style: { margin: 0, color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px' } }, syncNotice),
             selectedModels.map((model, index) => {
@@ -1941,6 +1947,8 @@ window.__ModuleLoader__.load({
                 metadataDefaultProvider: defaultProvider,
                 metadataOfficialProvider: officialProvider,
                 onMetadataChoice: next => chooseMetadataSelection(model.id, next),
+                onSyncCapabilities: () => runCapabilitySync([model]),
+                syncing,
                 t,
               })
             }),
