@@ -1,7 +1,15 @@
 {
   "name": "dsh-models-config-plugin",
   "version": "0.2.2",
-  "description": "Advanced per-model reasoning and capacity settings for DeepSeek Harness",
+  "description": "为 DeepSeek Harness Web UI 添加“模型高级配置”页面，用于创建自定义模型端点并配置每个模型的能力参数",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "llm",
+    "models",
+    "reasoning"
+  ],
   "license": "MIT",
   "type": "module",
   "scripts": {
