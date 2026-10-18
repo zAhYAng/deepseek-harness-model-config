@@ -14,6 +14,9 @@ window.__ModuleLoader__.load({
       'streamIdleTimeoutMs', 'retryPolicy',
     ]
     const MODELS_DEV_METADATA_URL = 'https://models.dev/api.json'
+    // Canonical model registry keyed by "<lab>/<model>". The per-provider
+    // catalog can lag it, so it fills official-provider gaps during matching.
+    const MODELS_DEV_CANONICAL_URL = 'https://models.dev/models.json'
     // Official provider ID grammar (dsh-client-ui-settings ROUTE_PATTERN):
     // lowercase letter first, then lowercase letters, digits, and dashes.
     const PROVIDER_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
@@ -180,9 +183,16 @@ window.__ModuleLoader__.load({
       metadataDefault: 'Default provider: {provider} ({context}/{output})',
       metadataOfficial: 'Official provider: {provider} ({context}/{output})',
       metadataProvider: '{provider} ({context}/{output})',
+      metadataCanonical: 'Official model record: {provider} ({context}/{output})',
+      metadataApproximate: 'Approximate match: {provider} ({context}/{output})',
+      approximateTitle: 'Confirm approximate matches',
+      approximateBody: 'These models have no exact models.dev record. The values below come from the model family (release-date suffix ignored) or the canonical link. Nothing is applied until you confirm:',
+      approximateRow: '{model} → {provider} ({context}/{output})',
+      approximateConfirm: 'Apply',
+      approximateCancelled: 'Approximate matches dismissed; nothing was applied.',
       syncCapabilities: 'Sync capabilities',
       syncingCapabilities: 'Syncing…',
-      syncCapabilitiesHint: 'Re-read models.dev metadata and overwrite the selected models\' context window, maximum output, input modalities, and reasoning levels.',
+      syncCapabilitiesHint: 'Re-read models.dev metadata. Exact matches apply directly; approximate ones (model family or canonical link) ask for confirmation first.',
       capabilitiesSynced: 'Synced capabilities for {matched} of {total} selected models; {unmatched} had no models.dev record.',
       reasoningInvalid: 'Reasoning efforts must be false or an effort list.',
       reasoningEmpty: 'A declared reasoning list needs at least one effort.',
@@ -328,9 +338,16 @@ window.__ModuleLoader__.load({
       metadataDefault: '默认 provider：{provider}（{context}/{output}）',
       metadataOfficial: '官方 provider：{provider}（{context}/{output}）',
       metadataProvider: '{provider}（{context}/{output}）',
+      metadataCanonical: '官方模型记录：{provider}（{context}/{output}）',
+      metadataApproximate: '近似匹配：{provider}（{context}/{output}）',
+      approximateTitle: '确认近似匹配',
+      approximateBody: '以下模型没有精确的 models.dev 记录，是按模型家族（忽略发布日期后缀）或 canonical 链接推断的近似匹配。确认后才会应用：',
+      approximateRow: '{model} → {provider}（{context}/{output}）',
+      approximateConfirm: '确认应用',
+      approximateCancelled: '已取消近似匹配，未应用任何更改。',
       syncCapabilities: '同步模型能力',
       syncingCapabilities: '同步中…',
-      syncCapabilitiesHint: '重新读取 models.dev 元数据，覆盖已选模型的上下文窗口、最大输出、输入模态和推理级别。',
+      syncCapabilitiesHint: '重新读取 models.dev 元数据：精确匹配直接应用；近似匹配（按模型家族或 canonical 链接推断）会先弹窗确认。',
       capabilitiesSynced: '已同步 {matched}/{total} 个已选模型的能力参数；{unmatched} 个没有 models.dev 记录。',
       reasoningInvalid: '推理强度必须是 false 或级别列表。',
       reasoningEmpty: '已声明推理强度时至少选择一个级别。',
@@ -378,10 +395,18 @@ window.__ModuleLoader__.load({
     function loadModelsDevMetadata({ force = false } = {}) {
       if (force) modelsDevMetadataPromise = undefined
       if (modelsDevMetadataPromise === undefined) {
-        modelsDevMetadataPromise = fetch(MODELS_DEV_METADATA_URL, { cache: force ? 'reload' : 'force-cache' }).then(async response => {
-          if (!response.ok) throw new Error(`models.dev returned HTTP ${response.status}`)
-          return response.json()
-        }).catch(error => {
+        const cacheMode = force ? 'reload' : 'force-cache'
+        modelsDevMetadataPromise = Promise.all([
+          fetch(MODELS_DEV_METADATA_URL, { cache: cacheMode }).then(async response => {
+            if (!response.ok) throw new Error(`models.dev returned HTTP ${response.status}`)
+            return response.json()
+          }),
+          // The canonical registry is an enrichment, not a requirement: a
+          // failure must leave the provider catalog usable.
+          fetch(MODELS_DEV_CANONICAL_URL, { cache: cacheMode })
+            .then(response => (response.ok ? response.json() : undefined))
+            .catch(() => undefined),
+        ]).then(([catalog, canonical]) => mergeCanonicalModels(catalog, canonical)).catch(error => {
           modelsDevMetadataPromise = undefined
           throw error
         })
@@ -416,15 +441,47 @@ window.__ModuleLoader__.load({
       })
     }
 
+    // A trailing release stamp ("-1017", "-0731", "-20250910") names a snapshot
+    // of the same model family, not a different model.
+    const RELEASE_STAMP = /[-._](\d{4}|\d{8})$/
+    function modelIdFamily(value) {
+      const family = value.replace(RELEASE_STAMP, '')
+      return family === '' ? value : family
+    }
+
+    // api.json links every wire model to the model it actually serves.
+    function canonicalModelId(value) {
+      const text = typeof value === 'string' ? value : ''
+      const slash = text.lastIndexOf('/')
+      return slash === -1 ? text : text.slice(slash + 1)
+    }
+
+    // Resolution order: exact key, exact canonical link, then the same model
+    // family (release stamp ignored). Family matches are flagged so the caller
+    // can ask before adopting them.
     function metadataModelForVariants(models, variants) {
       if (models === null || typeof models !== 'object') return undefined
-      const keys = Object.keys(models)
-      for (const variant of variants) {
-        const key = keys.find(modelId => modelId === variant || modelId.toLowerCase() === variant.toLowerCase())
-        const model = key === undefined ? undefined : models[key]
-        if (model !== null && typeof model === 'object') return { modelId: key, model }
-      }
-      return undefined
+      const entries = Object.entries(models).filter(([, model]) => model !== null && typeof model === 'object')
+      const lowerVariants = variants.map(variant => variant.toLowerCase())
+
+      const exact = entries.find(([key]) => lowerVariants.includes(key.toLowerCase()))
+      if (exact !== undefined) return { modelId: exact[0], model: exact[1], exact: true }
+
+      const canonical = entries.find(([, model]) =>
+        lowerVariants.includes(canonicalModelId(model.canonical_model_id).toLowerCase()))
+      if (canonical !== undefined) return { modelId: canonical[0], model: canonical[1], exact: true }
+
+      const families = new Set(variants.flatMap(variant => [
+        variant.toLowerCase(),
+        modelIdFamily(variant).toLowerCase(),
+      ]))
+      const approximate = entries.filter(([key, model]) =>
+        families.has(modelIdFamily(key).toLowerCase())
+        || families.has(modelIdFamily(canonicalModelId(model.canonical_model_id)).toLowerCase()))
+      if (approximate.length === 0) return undefined
+      // Prefer the shortest wire id: it is the least decorated spelling of the family.
+      approximate.sort((left, right) => left[0].length - right[0].length || left[0].localeCompare(right[0]))
+      return { modelId: approximate[0][0], model: approximate[0][1], exact: false }
     }
 
     function metadataModelRecord(providerId, result) {
@@ -467,6 +524,34 @@ window.__ModuleLoader__.load({
       return provider === undefined ? undefined : metadataModelRecord(providerId, metadataModelForVariants(provider.models, variants))
     }
 
+    // models.dev publishes a canonical registry (models.json, keyed "<lab>/<model>")
+    // beside the per-provider catalog (api.json). The catalog lags the registry:
+    // the DeepSeek lab lists deepseek-v4.1-flash, but the deepseek provider has no
+    // such entry, so a re-host that happens to use the same id wins by accident.
+    // Fold registry entries into the official provider when it has no record for
+    // the model; an existing provider record always wins.
+    function mergeCanonicalModels(catalog, canonical) {
+      if (catalog === null || typeof catalog !== 'object') return catalog
+      if (canonical === null || typeof canonical !== 'object') return catalog
+      const merged = { ...catalog }
+      for (const [key, model] of Object.entries(canonical)) {
+        if (model === null || typeof model !== 'object' || Array.isArray(model)) continue
+        const slash = key.indexOf('/')
+        if (slash <= 0 || slash === key.length - 1) continue
+        const modelId = key.slice(slash + 1)
+        const providerId = officialMetadataProviderForModel([modelId]) ?? key.slice(0, slash)
+        const provider = merged[providerId] !== null && typeof merged[providerId] === 'object' ? merged[providerId] : {}
+        const models = provider.models !== null && typeof provider.models === 'object' ? provider.models : {}
+        if (Object.keys(models).some(existing => existing.toLowerCase() === modelId.toLowerCase())) continue
+        merged[providerId] = {
+          ...provider,
+          id: typeof provider.id === 'string' && provider.id !== '' ? provider.id : providerId,
+          models: { ...models, [modelId]: { ...model, canonical: true } },
+        }
+      }
+      return merged
+    }
+
     function metadataLimit(model, field) {
       const limit = model !== null && typeof model === 'object'
         && model.limit !== null && typeof model.limit === 'object' ? model.limit : {}
@@ -503,34 +588,32 @@ window.__ModuleLoader__.load({
     }
 
     function metadataMatchForIdentifiers(metadata, identifiers) {
-      const exactCandidates = metadataRecordCandidates(metadata, identifiers)
+      const recordCandidates = metadataRecordCandidates(metadata, identifiers)
       const officialProvider = officialMetadataProviderForModel(identifiers)
       const official = officialProvider === undefined ? undefined : metadataProviderModel(metadata, officialProvider, identifiers)
       const exactOfficial = officialProvider === undefined
         ? undefined
-        : exactCandidates.find(candidate => candidate.providerId === officialProvider)
+        : recordCandidates.find(candidate => candidate.providerId === officialProvider)
       const officialCandidate = exactOfficial ?? official
       const candidates = official !== undefined && exactOfficial === undefined
-        ? [...exactCandidates, official]
-        : exactCandidates
-      if (officialCandidate !== undefined) {
-        return {
-          candidates,
-          selection: providerSelection(officialCandidate.providerId),
-          reason: 'official',
-          officialProvider,
-        }
-      }
-      if (candidates.length === 0) return { candidates, selection: undefined, reason: 'none' }
-      if (candidates.length === 1) {
-        return { candidates, selection: providerSelection(candidates[0].providerId), reason: 'unique' }
-      }
-      const defaultCandidate = defaultMetadataCandidate(candidates)
-      return {
+        ? [...recordCandidates, official]
+        : recordCandidates
+      // `exact` is false when the chosen record only matched by model family or
+      // canonical link; the UI asks before adopting such values.
+      const finish = (selection, reason) => ({
         candidates,
-        selection: defaultCandidate === undefined ? undefined : providerSelection(defaultCandidate.providerId),
-        reason: 'default',
+        selection,
+        reason,
+        officialProvider,
+        exact: candidates.find(candidate => providerSelection(candidate.providerId) === selection)?.exact !== false,
+      })
+      if (officialCandidate !== undefined) {
+        return finish(providerSelection(officialCandidate.providerId), 'official')
       }
+      if (candidates.length === 0) return finish(undefined, 'none')
+      if (candidates.length === 1) return finish(providerSelection(candidates[0].providerId), 'unique')
+      const defaultCandidate = defaultMetadataCandidate(candidates)
+      return finish(defaultCandidate === undefined ? undefined : providerSelection(defaultCandidate.providerId), 'default')
     }
 
     function metadataMatchForModel(metadata, model) {
@@ -590,6 +673,14 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // Automatic enrichment only adopts exact records. Approximate ones stay
+    // available as candidates and wait for an explicit confirmation.
+    function applyExactMetadata(model, match, selection, replaceMetadata = false) {
+      return match === undefined || match.exact === false
+        ? model
+        : enrichDiscoveredModel(model, match, selection, replaceMetadata)
+    }
+
     // Manual capability sync: re-read models.dev metadata for every selected
     // model and overwrite the fields enrichment owns. Discovery applies these
     // automatically, but an endpoint opened from stored settings starts without
@@ -598,18 +689,21 @@ window.__ModuleLoader__.load({
       const nextDrafts = {}
       const matches = {}
       const nextSelections = {}
+      const entries = []
       let matched = 0
       for (const model of models) {
         const draft = drafts[model.id] ?? { ...model }
         const match = metadataMatchForModel(metadata, draft)
         if (match === undefined || match.reason === 'none') continue
         const selection = retainedMetadataSelection(match, selections[model.id])
-        nextDrafts[model.id] = enrichDiscoveredModel(draft, match, selection, true)
+        const enriched = enrichDiscoveredModel(draft, match, selection, true)
+        nextDrafts[model.id] = enriched
         matches[model.id] = { ...match, selection }
         nextSelections[model.id] = selection
+        entries.push({ id: model.id, enriched, match: { ...match, selection }, selection })
         matched += 1
       }
-      return { drafts: nextDrafts, matches, selections: nextSelections, matched }
+      return { drafts: nextDrafts, matches, selections: nextSelections, matched, entries }
     }
 
     function messageOf(error) {
@@ -1172,7 +1266,19 @@ window.__ModuleLoader__.load({
           }, metadataCandidates.map(candidate => h('option', {
             key: candidate.providerId,
             value: providerSelection(candidate.providerId),
-          }, candidate.providerId === metadataDefaultProvider
+          }, candidate.exact === false
+            ? t('metadataApproximate', {
+              provider: candidate.providerId,
+              context: metadataLimitText(candidate.model, 'context'),
+              output: metadataLimitText(candidate.model, 'output'),
+            })
+            : candidate.model?.canonical === true
+            ? t('metadataCanonical', {
+              provider: candidate.providerId,
+              context: metadataLimitText(candidate.model, 'context'),
+              output: metadataLimitText(candidate.model, 'output'),
+            })
+            : candidate.providerId === metadataDefaultProvider
             ? t('metadataDefault', {
               provider: candidate.providerId,
               context: metadataLimitText(candidate.model, 'context'),
@@ -1265,6 +1371,7 @@ window.__ModuleLoader__.load({
       const [metadataNotice, setMetadataNotice] = useState(undefined)
       const [syncNotice, setSyncNotice] = useState(undefined)
       const [syncing, setSyncing] = useState(false)
+      const [pendingSync, setPendingSync] = useState(undefined)
       const [settingsSaved, setSettingsSaved] = useState(false)
       const [advanced, setAdvanced] = useState({ ...initialAdvanced })
       const route = editing ? provider : endpoint.id
@@ -1367,7 +1474,7 @@ window.__ModuleLoader__.load({
               const match = metadataMatchForModel(metadata, metadataCandidate)
               const selection = retainedMetadataSelection(match, metadataSelectionsBeforeFetch[candidate.id])
               return {
-                candidate: enrichDiscoveredModel(candidate, match, selection),
+                candidate: applyExactMetadata(candidate, match, selection),
                 match: { ...match, selection },
               }
             })
@@ -1434,7 +1541,7 @@ window.__ModuleLoader__.load({
           const draftMatch = metadataMatchForModel(metadata, draft)
           return draftMatch === undefined
             ? current
-            : { ...current, [model.id]: enrichDiscoveredModel(draft, draftMatch, draftMatch.selection) }
+            : { ...current, [model.id]: applyExactMetadata(draft, draftMatch, draftMatch.selection) }
         })
       }
       const withModelsDevMetadata = apply => {
@@ -1449,27 +1556,40 @@ window.__ModuleLoader__.load({
         return false
       }
       // Manual fallback for the automatic enrichment: re-read models.dev for the
-      // current selection and overwrite the capability fields it owns. Explicit
-      // user edits survive only until this button is pressed again.
+      // current selection and overwrite the capability fields it owns. Exact
+      // records apply immediately; approximate (family/canonical) records wait
+      // for an explicit confirmation.
+      const commitSync = result => {
+        if (result.matched > 0) {
+          setModelDrafts(current => ({ ...current, ...result.drafts }))
+          setMetadataMatches(current => ({ ...current, ...result.matches }))
+          setMetadataSelections(current => ({ ...current, ...result.selections }))
+        }
+        setSyncNotice(t('capabilitiesSynced', {
+          matched: result.matched,
+          total: result.total,
+          unmatched: result.total - result.matched,
+        }))
+      }
       const syncModelCapabilities = () => {
         if (syncing || selectedModels.length === 0) return
         setSyncing(true)
         setFailure(undefined)
         setMetadataNotice(undefined)
         setSyncNotice(undefined)
+        setPendingSync(undefined)
         const targets = selectedModels
         const apply = metadata => {
-          const result = syncModelMetadata(targets, modelDrafts, metadata, metadataSelections)
-          if (result.matched > 0) {
-            setModelDrafts(current => ({ ...current, ...result.drafts }))
-            setMetadataMatches(current => ({ ...current, ...result.matches }))
-            setMetadataSelections(current => ({ ...current, ...result.selections }))
-          }
-          setSyncNotice(t('capabilitiesSynced', {
-            matched: result.matched,
+          const result = {
+            ...syncModelMetadata(targets, modelDrafts, metadata, metadataSelections),
             total: targets.length,
-            unmatched: targets.length - result.matched,
-          }))
+          }
+          const approximate = result.entries.filter(entry => entry.match.exact === false)
+          if (approximate.length > 0) {
+            setPendingSync({ result, approximate })
+            return
+          }
+          commitSync(result)
         }
         if (modelsDevMetadata !== undefined) {
           apply(modelsDevMetadata)
@@ -1509,7 +1629,7 @@ window.__ModuleLoader__.load({
         const rematch = metadata => {
           const match = metadataMatchForModel(metadata, next)
           const selection = match?.selection
-          const enriched = match === undefined ? next : enrichDiscoveredModel(next, match, selection)
+          const enriched = applyExactMetadata(next, match, selection)
           setModelDrafts(current => {
             const draft = current[id]
             return draft !== undefined && modelDisplayName(draft) !== modelDisplayName(next)
@@ -1778,6 +1898,39 @@ window.__ModuleLoader__.load({
             onClick: () => { void save() },
           }, busy ? t('saving') : settingsSaved ? t('retryKey') : editing ? t('saveChanges') : t('confirmSave')),
         ),
+        pendingSync === undefined ? null : h('div', {
+          style: {
+            position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center',
+            justifyContent: 'center', padding: '24px', background: 'rgba(0, 0, 0, 0.45)',
+          },
+        }, h('div', {
+          role: 'dialog', 'aria-modal': 'true', 'aria-label': t('approximateTitle'),
+          style: { ...cardStyle, width: '100%', maxWidth: '560px', maxHeight: '80vh', overflow: 'auto' },
+        },
+        h('h3', { style: { margin: 0, fontSize: '15px' } }, t('approximateTitle')),
+        h('p', { style: { margin: 0, fontSize: '13px', color: 'var(--dsw-alias-label-secondary)' } }, t('approximateBody')),
+        h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
+          pendingSync.approximate.map(entry => h('p', {
+            key: entry.id,
+            style: { margin: 0, fontSize: '12px' },
+          }, t('approximateRow', {
+            model: entry.id,
+            provider: entry.selection.replace('provider:', ''),
+            context: entry.enriched.contextWindow ?? '?',
+            output: entry.enriched.maxTokens ?? '?',
+          })))),
+        h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px' } },
+          h('button', {
+            type: 'button', style: buttonStyle,
+            onClick: () => { setPendingSync(undefined); setSyncNotice(t('approximateCancelled')) },
+          }, t('cancel')),
+          h('button', {
+            type: 'button',
+            style: { ...buttonStyle, background: 'var(--dsw-alias-button-primary-fill)', color: 'var(--dsw-alias-label-primary-foreground)', borderColor: 'transparent' },
+            onClick: () => { commitSync(pendingSync.result); setPendingSync(undefined) },
+          }, t('approximateConfirm')),
+        ),
+        )),
       )
     }
 

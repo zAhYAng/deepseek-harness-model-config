@@ -10,7 +10,7 @@ async function loadMetadataHelpers() {
   const source = await readFile(clientPath, 'utf8')
   const instrumented = source.replace(
     '    return { inject, apply }',
-    '    return { inject, apply, __test: { enrichDiscoveredModel, metadataCandidateForDiscovery, metadataMatchForModel, modelDisplayName, modelMatchesSearch, selectedModelsMissingFromDiscovery, sortCandidatesForDisplay, isAliyunEndpoint, effectiveCompat, credentialKeyRef, PROVIDER_ID_PATTERN, syncModelMetadata } }',
+    '    return { inject, apply, __test: { enrichDiscoveredModel, metadataCandidateForDiscovery, metadataMatchForModel, modelDisplayName, modelMatchesSearch, selectedModelsMissingFromDiscovery, sortCandidatesForDisplay, isAliyunEndpoint, effectiveCompat, credentialKeyRef, PROVIDER_ID_PATTERN, syncModelMetadata, mergeCanonicalModels, applyExactMetadata } }',
   )
   let definition
   vm.runInNewContext(instrumented, {
@@ -241,4 +241,151 @@ test('manual capability sync keeps a still-valid provider selection', async () =
   const fallback = syncModelMetadata([model], { [model.id]: model }, metadata, { [model.id]: 'provider:gone' })
   assert.notEqual(fallback.selections[model.id], 'provider:gone')
   assert.equal(fallback.drafts[model.id].contextWindow, 10)
+})
+
+test('the canonical registry fills gaps in the official provider catalog', async () => {
+  const { mergeCanonicalModels } = await loadMetadataHelpers()
+  const catalog = {
+    deepseek: { id: 'deepseek', models: { 'deepseek-v4-flash': { limit: { context: 1000000, output: 393216 } } } },
+    scaleway: { id: 'scaleway', models: { 'deepseek-v4.1-flash': { limit: { context: 256000, output: 32768 } } } },
+  }
+  const canonical = {
+    'deepseek/deepseek-v4.1-flash': {
+      id: 'deepseek/deepseek-v4.1-flash',
+      limit: { context: 1000000, output: 384000 },
+      modalities: { input: ['text', 'image'] },
+    },
+  }
+  const merged = mergeCanonicalModels(catalog, canonical)
+
+  assert.equal(merged.deepseek.models['deepseek-v4.1-flash'].limit.output, 384000)
+  assert.equal(merged.deepseek.models['deepseek-v4.1-flash'].canonical, true)
+  // Existing provider records are never replaced.
+  assert.equal(merged.deepseek.models['deepseek-v4-flash'].limit.output, 393216)
+  // Other providers are copied unchanged.
+  assert.equal(merged.scaleway.models['deepseek-v4.1-flash'].limit.context, 256000)
+})
+
+test('a canonical record beats a third-party re-host that reuses the model id', async () => {
+  const { mergeCanonicalModels, metadataMatchForModel, enrichDiscoveredModel } = await loadMetadataHelpers()
+  const catalog = {
+    deepseek: { id: 'deepseek', models: { 'deepseek-v4-flash': { limit: { context: 1000000, output: 393216 } } } },
+    scaleway: { id: 'scaleway', models: { 'deepseek-v4.1-flash': { limit: { context: 256000, output: 32768 } } } },
+  }
+  const canonical = {
+    'deepseek/deepseek-v4.1-flash': {
+      id: 'deepseek/deepseek-v4.1-flash',
+      limit: { context: 1000000, output: 384000 },
+      modalities: { input: ['text', 'image'] },
+    },
+  }
+  const metadata = mergeCanonicalModels(catalog, canonical)
+  const model = { id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash' }
+  const match = metadataMatchForModel(metadata, model)
+  const enriched = enrichDiscoveredModel(model, match, match.selection, true)
+
+  assert.equal(match.reason, 'official')
+  assert.equal(match.officialProvider, 'deepseek')
+  assert.equal(enriched.contextWindow, 1000000)
+  assert.equal(enriched.maxTokens, 384000)
+  assert.deepEqual(enriched.input, ['text', 'image'])
+})
+
+test('canonical models land on the official provider implied by the model id', async () => {
+  const { mergeCanonicalModels } = await loadMetadataHelpers()
+  const merged = mergeCanonicalModels({ alibaba: { id: 'alibaba', models: {} } }, {
+    'qwen/qwen-max': { limit: { context: 1000000, output: 65536 } },
+  })
+
+  assert.equal(merged.alibaba.models['qwen-max'].limit.output, 65536)
+  assert.equal(merged.qwen, undefined)
+})
+
+test('a canonical fetch failure leaves the provider catalog usable', async () => {
+  const { mergeCanonicalModels } = await loadMetadataHelpers()
+  const catalog = { deepseek: { id: 'deepseek', models: { 'deepseek-v4-flash': { limit: { context: 1000000, output: 393216 } } } } }
+
+  assert.equal(mergeCanonicalModels(catalog, undefined), catalog)
+  assert.equal(mergeCanonicalModels(catalog, null), catalog)
+})
+
+test('a release stamp is not a different model family', async () => {
+  const { metadataMatchForModel } = await loadMetadataHelpers()
+  const metadata = {
+    acme: { id: 'acme', models: { 'model-x-1017': { limit: { context: 1000, output: 500 } } } },
+  }
+  const match = metadataMatchForModel(metadata, { id: 'model-x' })
+
+  assert.equal(match.reason, 'unique')
+  assert.equal(match.selection, 'provider:acme')
+  assert.equal(match.exact, false)
+})
+
+test('a canonical link identifies the model when the wire id differs', async () => {
+  const { metadataMatchForModel } = await loadMetadataHelpers()
+  const metadata = {
+    deepseek: {
+      id: 'deepseek',
+      models: {
+        'deepseek-flash': {
+          name: 'DeepSeek V4.1 Flash 1017',
+          canonical_model_id: 'deepseek/deepseek-v4.1-flash-1017',
+          limit: { context: 1000000, output: 393216 },
+        },
+      },
+    },
+    scaleway: { id: 'scaleway', models: { 'deepseek-v4.1-flash': { limit: { context: 256000, output: 32768 } } } },
+  }
+  const match = metadataMatchForModel(metadata, { id: 'deepseek-v4.1-flash' })
+
+  // The official provider only has the dated snapshot, so this is approximate.
+  assert.equal(match.reason, 'official')
+  assert.equal(match.officialProvider, 'deepseek')
+  assert.equal(match.selection, 'provider:deepseek')
+  assert.equal(match.exact, false)
+})
+
+test('an exact id match stays exact', async () => {
+  const { metadataMatchForModel } = await loadMetadataHelpers()
+  const metadata = {
+    deepseek: { id: 'deepseek', models: { 'deepseek-v4.1-flash': { limit: { context: 1000000, output: 384000 } } } },
+  }
+  const match = metadataMatchForModel(metadata, { id: 'deepseek-v4.1-flash' })
+
+  assert.equal(match.reason, 'official')
+  assert.equal(match.exact, true)
+})
+
+test('automatic enrichment adopts exact matches but waits on approximate ones', async () => {
+  const { applyExactMetadata, metadataMatchForModel } = await loadMetadataHelpers()
+  const metadata = {
+    acme: { id: 'acme', models: { 'model-x-1017': { limit: { context: 1000, output: 500 } } } },
+  }
+  const model = { id: 'model-x' }
+  const match = metadataMatchForModel(metadata, model)
+
+  const untouched = applyExactMetadata(model, match, match.selection)
+  assert.equal(untouched.contextWindow, undefined)
+  assert.equal(untouched.maxTokens, undefined)
+
+  const exactModel = { id: 'model-x-1017' }
+  const exactMatch = metadataMatchForModel(metadata, exactModel)
+  const enriched = applyExactMetadata(exactModel, exactMatch, exactMatch.selection)
+  assert.equal(enriched.contextWindow, 1000)
+  assert.equal(enriched.maxTokens, 500)
+})
+
+test('a manual sync exposes approximate entries for confirmation', async () => {
+  const { syncModelMetadata } = await loadMetadataHelpers()
+  const metadata = {
+    acme: { id: 'acme', models: { 'model-x-1017': { limit: { context: 1000, output: 500 } } } },
+    beta: { id: 'beta', models: { 'exact-model': { limit: { context: 2000, output: 800 } } } },
+  }
+  const approximate = { id: 'model-x' }
+  const exact = { id: 'exact-model' }
+  const result = syncModelMetadata([approximate, exact], {}, metadata)
+
+  assert.equal(result.matched, 2)
+  assert.equal(result.entries.find(entry => entry.id === 'model-x').match.exact, false)
+  assert.equal(result.entries.find(entry => entry.id === 'exact-model').match.exact, true)
 })

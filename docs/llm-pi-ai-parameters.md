@@ -252,7 +252,7 @@ retryPolicy:
 - 模型 reasoningEfforts
 - 模型级 `compat`
 - 模型元数据 provider 来源选择
-- 已选模型的一键“同步模型能力”（重新应用 `models.dev` 元数据）
+- 已选模型的一键“同步模型能力”（重新应用 `models.dev` 元数据；近似匹配先弹窗确认）
 - 新增和已保存端点的模型拉取
 
 `modelOverrides` 仍建议直接写入配置，因为它与显式 `models` 列表的语义不同，需要独立的内置模型覆盖编辑器。
