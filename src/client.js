@@ -180,14 +180,14 @@ window.__ModuleLoader__.load({
       metadataUnavailable: 'Could not load models.dev metadata. The endpoint results remain editable.',
       metadataSource: 'Metadata source',
       metadataSourceDescription: 'Each option is one provider metadata record. Switching it replaces all metadata fields for this model.',
-      metadataDefault: 'Default provider: {provider} ({context}/{output})',
-      metadataOfficial: 'Official provider: {provider} ({context}/{output})',
-      metadataProvider: '{provider} ({context}/{output})',
-      metadataCanonical: 'Official model record: {provider} ({context}/{output})',
-      metadataApproximate: 'Approximate match: {provider} ({context}/{output})',
+      metadataDefault: 'Default provider: {name} · {provider} ({context}/{output})',
+      metadataOfficial: 'Official provider: {name} · {provider} ({context}/{output})',
+      metadataProvider: '{name} · {provider} ({context}/{output})',
+      metadataCanonical: 'Official model record: {name} · {provider} ({context}/{output})',
+      metadataApproximate: 'Approximate match: {name} · {provider} ({context}/{output})',
       approximateTitle: 'Confirm approximate matches',
-      approximateBody: 'These models have no exact models.dev record. The values below come from the model family (release-date suffix ignored) or the canonical link. Nothing is applied until you confirm:',
-      approximateRow: '{model} → {provider} ({context}/{output})',
+      approximateBody: 'These models have no exact models.dev record. The values below come from the model family (release-date suffix ignored) or the canonical link. Pick the record to use, then confirm:',
+      approximateFor: 'Matched record for {model}:',
       approximateConfirm: 'Apply',
       approximateCancelled: 'Approximate matches dismissed; nothing was applied.',
       syncModelCapabilities: 'Fetch capabilities',
@@ -336,14 +336,14 @@ window.__ModuleLoader__.load({
       metadataUnavailable: '无法加载 models.dev 元数据；端点返回的模型仍可编辑。',
       metadataSource: '元数据来源',
       metadataSourceDescription: '每个选项都是一个完整的 provider 元数据记录；切换后会整体替换该模型的元数据参数。',
-      metadataDefault: '默认 provider：{provider}（{context}/{output}）',
-      metadataOfficial: '官方 provider：{provider}（{context}/{output}）',
-      metadataProvider: '{provider}（{context}/{output}）',
-      metadataCanonical: '官方模型记录：{provider}（{context}/{output}）',
-      metadataApproximate: '近似匹配：{provider}（{context}/{output}）',
+      metadataDefault: '默认 provider：{name} · {provider}（{context}/{output}）',
+      metadataOfficial: '官方 provider：{name} · {provider}（{context}/{output}）',
+      metadataProvider: '{name} · {provider}（{context}/{output}）',
+      metadataCanonical: '官方模型记录：{name} · {provider}（{context}/{output}）',
+      metadataApproximate: '近似匹配：{name} · {provider}（{context}/{output}）',
       approximateTitle: '确认近似匹配',
-      approximateBody: '以下模型没有精确的 models.dev 记录，是按模型家族（忽略发布日期后缀）或 canonical 链接推断的近似匹配。确认后才会应用：',
-      approximateRow: '{model} → {provider}（{context}/{output}）',
+      approximateBody: '以下模型没有精确的 models.dev 记录，是按模型家族（忽略发布日期后缀）或 canonical 链接推断的近似匹配。请选择要应用的记录，然后确认：',
+      approximateFor: '模型 {model} 的匹配记录：',
       approximateConfirm: '确认应用',
       approximateCancelled: '已取消近似匹配，未应用任何更改。',
       syncModelCapabilities: '获取参数',
@@ -430,6 +430,31 @@ window.__ModuleLoader__.load({
         if (identifier.includes('/')) variants.push(identifier.slice(identifier.lastIndexOf('/') + 1))
       }
       return [...new Set(variants)]
+    }
+
+    // The record's own model name is what a person recognizes in the dropdown;
+    // the provider id alone does not say which model was matched.
+    function metadataCandidateName(candidate) {
+      const name = candidate?.model?.name
+      if (typeof name === 'string' && name.trim() !== '') return name.trim()
+      if (typeof candidate?.modelId === 'string' && candidate.modelId !== '') return candidate.modelId
+      return typeof candidate?.providerId === 'string' ? candidate.providerId : ''
+    }
+
+    // One label for a metadata record: its own model name first, then the
+    // provider and capacities, so the dropdown and the dialog read the same way.
+    function metadataCandidateLabel(candidate, t, defaultProvider, officialProvider) {
+      const params = {
+        name: metadataCandidateName(candidate),
+        provider: candidate.providerId,
+        context: metadataLimitText(candidate.model, 'context'),
+        output: metadataLimitText(candidate.model, 'output'),
+      }
+      if (candidate.exact === false) return t('metadataApproximate', params)
+      if (candidate.model?.canonical === true) return t('metadataCanonical', params)
+      if (candidate.providerId === defaultProvider) return t('metadataDefault', params)
+      if (candidate.providerId === officialProvider) return t('metadataOfficial', params)
+      return t('metadataProvider', params)
     }
 
     function metadataProviderEntries(metadata) {
@@ -767,7 +792,7 @@ window.__ModuleLoader__.load({
         nextDrafts[model.id] = enriched
         matches[model.id] = { ...match, selection }
         nextSelections[model.id] = selection
-        entries.push({ id: model.id, enriched, match: { ...match, selection }, selection })
+        entries.push({ id: model.id, draft, enriched, match: { ...match, selection }, selection })
         matched += 1
       }
       return { drafts: nextDrafts, matches, selections: nextSelections, matched, entries }
@@ -1334,35 +1359,7 @@ window.__ModuleLoader__.load({
           }, metadataCandidates.map(candidate => h('option', {
             key: candidate.providerId,
             value: providerSelection(candidate.providerId),
-          }, candidate.exact === false
-            ? t('metadataApproximate', {
-              provider: candidate.providerId,
-              context: metadataLimitText(candidate.model, 'context'),
-              output: metadataLimitText(candidate.model, 'output'),
-            })
-            : candidate.model?.canonical === true
-            ? t('metadataCanonical', {
-              provider: candidate.providerId,
-              context: metadataLimitText(candidate.model, 'context'),
-              output: metadataLimitText(candidate.model, 'output'),
-            })
-            : candidate.providerId === metadataDefaultProvider
-            ? t('metadataDefault', {
-              provider: candidate.providerId,
-              context: metadataLimitText(candidate.model, 'context'),
-              output: metadataLimitText(candidate.model, 'output'),
-            })
-            : candidate.providerId === metadataOfficialProvider
-              ? t('metadataOfficial', {
-                provider: candidate.providerId,
-                context: metadataLimitText(candidate.model, 'context'),
-                output: metadataLimitText(candidate.model, 'output'),
-              })
-            : t('metadataProvider', {
-              provider: candidate.providerId,
-              context: metadataLimitText(candidate.model, 'context'),
-              output: metadataLimitText(candidate.model, 'output'),
-            }))))),
+          }, metadataCandidateLabel(candidate, t, metadataDefaultProvider, metadataOfficialProvider))))),
           h('p', { style: { margin: 0, color: 'var(--dsw-alias-label-tertiary)', fontSize: '12px' } }, t('metadataSourceDescription')),
         ) : null,
         h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px', paddingTop: '10px' } },
@@ -1448,6 +1445,7 @@ window.__ModuleLoader__.load({
       const [syncNotice, setSyncNotice] = useState(undefined)
       const [syncing, setSyncing] = useState(false)
       const [pendingSync, setPendingSync] = useState(undefined)
+      const [pendingSelections, setPendingSelections] = useState({})
       const [settingsSaved, setSettingsSaved] = useState(false)
       const [advanced, setAdvanced] = useState({ ...initialAdvanced })
       const route = editing ? provider : endpoint.id
@@ -1663,6 +1661,7 @@ window.__ModuleLoader__.load({
           }
           const approximate = result.entries.filter(entry => entry.match.exact === false)
           if (approximate.length > 0) {
+            setPendingSelections(Object.fromEntries(approximate.map(entry => [entry.id, entry.selection])))
             setPendingSync({ result, approximate })
             return
           }
@@ -1677,6 +1676,25 @@ window.__ModuleLoader__.load({
           setModelsDevMetadata(metadata)
           apply(metadata)
         }).catch(() => setSyncNotice(t('metadataUnavailable'))).finally(() => setSyncing(false))
+      }
+      // Confirming an approximate match re-enriches each pending model with the
+      // record the user picked in the dialog (default: the inferred one).
+      const confirmPendingSync = () => {
+        if (pendingSync === undefined) return
+        const drafts = { ...pendingSync.result.drafts }
+        const matches = { ...pendingSync.result.matches }
+        const selections = { ...pendingSync.result.selections }
+        const entries = pendingSync.result.entries.map(entry => {
+          const choice = pendingSelections[entry.id] ?? entry.selection
+          if (!pendingSync.approximate.some(item => item.id === entry.id)) return entry
+          const enriched = enrichDiscoveredModel(entry.draft, entry.match, choice, true)
+          drafts[entry.id] = enriched
+          matches[entry.id] = { ...entry.match, selection: choice }
+          selections[entry.id] = choice
+          return { ...entry, selection: choice, enriched }
+        })
+        commitSync({ ...pendingSync.result, drafts, matches, selections, entries })
+        setPendingSync(undefined)
       }
       const addManualModel = () => {
         const id = manualModelId.trim()
@@ -1982,16 +2000,21 @@ window.__ModuleLoader__.load({
         },
         h('h3', { style: { margin: 0, fontSize: '15px' } }, t('approximateTitle')),
         h('p', { style: { margin: 0, fontSize: '13px', color: 'var(--dsw-alias-label-secondary)' } }, t('approximateBody')),
-        h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
-          pendingSync.approximate.map(entry => h('p', {
+        h('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
+          pendingSync.approximate.map(entry => h('div', {
             key: entry.id,
-            style: { margin: 0, fontSize: '12px' },
-          }, t('approximateRow', {
-            model: entry.id,
-            provider: entry.selection.replace('provider:', ''),
-            context: entry.enriched.contextWindow ?? '?',
-            output: entry.enriched.maxTokens ?? '?',
-          })))),
+            style: { display: 'flex', flexDirection: 'column', gap: '4px' },
+          },
+          h('span', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } }, t('approximateFor', { model: entry.id })),
+          h('select', {
+            style: selectStyle,
+            value: pendingSelections[entry.id] ?? entry.selection,
+            onChange: event => setPendingSelections(current => ({ ...current, [entry.id]: event.target.value })),
+          }, entry.match.candidates.map(candidate => h('option', {
+            key: candidate.providerId,
+            value: providerSelection(candidate.providerId),
+          }, metadataCandidateLabel(candidate, t, undefined, entry.match.officialProvider)))),
+          ))),
         h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px' } },
           h('button', {
             type: 'button', style: buttonStyle,
@@ -2000,7 +2023,7 @@ window.__ModuleLoader__.load({
           h('button', {
             type: 'button',
             style: { ...buttonStyle, background: 'var(--dsw-alias-button-primary-fill)', color: 'var(--dsw-alias-label-primary-foreground)', borderColor: 'transparent' },
-            onClick: () => { commitSync(pendingSync.result); setPendingSync(undefined) },
+            onClick: confirmPendingSync,
           }, t('approximateConfirm')),
         ),
         )),
