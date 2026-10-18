@@ -441,12 +441,27 @@ window.__ModuleLoader__.load({
       })
     }
 
-    // A trailing release stamp ("-1017", "-0731", "-20250910") names a snapshot
-    // of the same model family, not a different model.
-    const RELEASE_STAMP = /[-._](\d{4}|\d{8})$/
-    function modelIdFamily(value) {
-      const family = value.replace(RELEASE_STAMP, '')
-      return family === '' ? value : family
+    // Approximate identity: case, separators, and a trailing release stamp are
+    // not part of a model's identity, so "DeepSeek V4.1 Flash 1017",
+    // "deepseek-v4.1-flash" and "deepseek-v4.1-flash" agree.
+    function modelIdShape(value) {
+      const shape = String(value ?? '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+      const stamped = shape.replace(/-(?:\d{4}|\d{8})$/, '')
+      return stamped === '' ? shape : stamped
+    }
+
+    // A variant suffix ("-higi") or a release stamp ("-1017") may appear on only
+    // one side, so the shorter shape must end at a separator boundary.
+    function shapePrefixOf(shorter, longer) {
+      return longer.startsWith(shorter)
+        && (longer.length === shorter.length || longer[shorter.length] === '-')
+    }
+
+    function shapesRelate(left, right) {
+      return left === right || shapePrefixOf(left, right) || shapePrefixOf(right, left)
     }
 
     // api.json links every wire model to the model it actually serves.
@@ -454,6 +469,25 @@ window.__ModuleLoader__.load({
       const text = typeof value === 'string' ? value : ''
       const slash = text.lastIndexOf('/')
       return slash === -1 ? text : text.slice(slash + 1)
+    }
+
+    // Catalog metadata is immutable per load, so normalized shapes are computed
+    // once per provider map instead of on every lookup.
+    const modelShapeCache = new WeakMap()
+    function modelShapeEntries(models) {
+      let cached = modelShapeCache.get(models)
+      if (cached === undefined) {
+        cached = []
+        for (const [key, model] of Object.entries(models)) {
+          if (model === null || typeof model !== 'object') continue
+          const shapes = [key, model.name, canonicalModelId(model.canonical_model_id)]
+            .map(modelIdShape)
+            .filter(shape => shape !== '')
+          cached.push({ key, model, shapes })
+        }
+        modelShapeCache.set(models, cached)
+      }
+      return cached
     }
 
     // Resolution order: exact key, exact canonical link, then the same model
@@ -471,17 +505,27 @@ window.__ModuleLoader__.load({
         lowerVariants.includes(canonicalModelId(model.canonical_model_id).toLowerCase()))
       if (canonical !== undefined) return { modelId: canonical[0], model: canonical[1], exact: true }
 
-      const families = new Set(variants.flatMap(variant => [
-        variant.toLowerCase(),
-        modelIdFamily(variant).toLowerCase(),
-      ]))
-      const approximate = entries.filter(([key, model]) =>
-        families.has(modelIdFamily(key).toLowerCase())
-        || families.has(modelIdFamily(canonicalModelId(model.canonical_model_id)).toLowerCase()))
-      if (approximate.length === 0) return undefined
-      // Prefer the shortest wire id: it is the least decorated spelling of the family.
-      approximate.sort((left, right) => left[0].length - right[0].length || left[0].localeCompare(right[0]))
-      return { modelId: approximate[0][0], model: approximate[0][1], exact: false }
+      // Approximate: compare normalized shapes against the wire id, the display
+      // name, and the canonical link. A shorter shape may match a longer one on
+      // either side, so "gemini-3.8-flash-higi" reaches "gemini-3.8-flash" and
+      // "DeepSeek V4.1 Flash" reaches "DeepSeek V4.1 Flash 1017".
+      const wantedShapes = variants.map(modelIdShape).filter(shape => shape !== '')
+      if (wantedShapes.length === 0) return undefined
+      let best
+      for (const entry of modelShapeEntries(models)) {
+        for (const shape of entry.shapes) {
+          for (const wanted of wantedShapes) {
+            if (!shapesRelate(shape, wanted)) continue
+            const distance = Math.abs(shape.length - wanted.length)
+            if (best === undefined
+              || distance < best.distance
+              || (distance === best.distance && entry.key.length < best.key.length)) {
+              best = { key: entry.key, model: entry.model, distance }
+            }
+          }
+        }
+      }
+      return best === undefined ? undefined : { modelId: best.key, model: best.model, exact: false }
     }
 
     function metadataModelRecord(providerId, result) {

@@ -321,6 +321,49 @@ test('a release stamp is not a different model family', async () => {
   assert.equal(match.exact, false)
 })
 
+test('the provider display name may carry a release stamp the local id lacks', async () => {
+  const { metadataMatchForModel } = await loadMetadataHelpers()
+  const metadata = {
+    acme: {
+      id: 'acme',
+      models: {
+        'deepseek-flash': {
+          name: 'DeepSeek V4.1 Flash 1017',
+          limit: { context: 1000000, output: 393216 },
+        },
+      },
+    },
+  }
+  const match = metadataMatchForModel(metadata, { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' })
+
+  assert.equal(match.reason, 'unique')
+  assert.equal(match.selection, 'provider:acme')
+  assert.equal(match.exact, false)
+})
+
+test('a local variant suffix still reaches the provider record', async () => {
+  const { metadataMatchForModel } = await loadMetadataHelpers()
+  const metadata = {
+    acme: { id: 'acme', models: { 'gemini-3.8-flash': { limit: { context: 1048576, output: 65536 } } } },
+  }
+  const match = metadataMatchForModel(metadata, { id: 'gemini-3.8-flash-higi' })
+
+  assert.equal(match.reason, 'unique')
+  assert.equal(match.selection, 'provider:acme')
+  assert.equal(match.exact, false)
+})
+
+test('unrelated families stay unmatched', async () => {
+  const { metadataMatchForModel } = await loadMetadataHelpers()
+  const metadata = {
+    acme: { id: 'acme', models: { 'gemini-3.5-flash': { limit: { context: 1000, output: 500 } } } },
+  }
+  const match = metadataMatchForModel(metadata, { id: 'gemini-3.8-flash-higi' })
+
+  assert.equal(match.reason, 'none')
+  assert.equal(match.exact, true)
+})
+
 test('a canonical link identifies the model when the wire id differs', async () => {
   const { metadataMatchForModel } = await loadMetadataHelpers()
   const metadata = {
