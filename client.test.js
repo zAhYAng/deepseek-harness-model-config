@@ -309,6 +309,64 @@ test('a canonical fetch failure leaves the provider catalog usable', async () =>
   assert.equal(mergeCanonicalModels(catalog, null), catalog)
 })
 
+test('a canonical record borrows reasoning options from its own family', async () => {
+  const { mergeCanonicalModels, metadataMatchForModel, enrichDiscoveredModel } = await loadMetadataHelpers()
+  const catalog = {
+    deepseek: {
+      id: 'deepseek',
+      models: {
+        'deepseek-flash': {
+          canonical_model_id: 'deepseek/deepseek-v4.1-flash-1017',
+          reasoning: true,
+          reasoning_options: [{ type: 'toggle' }, { type: 'effort', values: ['low', 'high', 'max'] }],
+          limit: { context: 1000000, output: 393216 },
+        },
+        'deepseek-v4-pro': {
+          reasoning: true,
+          reasoning_options: [{ type: 'effort', values: ['medium'] }],
+          limit: { context: 1000000, output: 393216 },
+        },
+      },
+    },
+  }
+  const canonical = {
+    'deepseek/deepseek-v4.1-flash': {
+      id: 'deepseek/deepseek-v4.1-flash',
+      name: 'DeepSeek V4.1 Flash',
+      reasoning: true,
+      limit: { context: 1000000, output: 384000 },
+      modalities: { input: ['text', 'image'] },
+    },
+  }
+  const metadata = mergeCanonicalModels(catalog, canonical)
+  const merged = metadata.deepseek.models['deepseek-v4.1-flash']
+
+  assert.deepEqual(merged.reasoning_options, [{ type: 'toggle' }, { type: 'effort', values: ['low', 'high', 'max'] }])
+  assert.equal(merged.limit.output, 384000)
+
+  const model = { id: 'deepseek-v4.1-flash' }
+  const match = metadataMatchForModel(metadata, model)
+  const enriched = enrichDiscoveredModel(model, match, match.selection, true)
+  assert.deepEqual(enriched.reasoningEfforts, { low: 'low', high: 'high', max: 'max' })
+})
+
+test('canonical reasoning options are not borrowed from an unrelated family', async () => {
+  const { mergeCanonicalModels } = await loadMetadataHelpers()
+  const catalog = {
+    acme: {
+      id: 'acme',
+      models: {
+        'other-model': { reasoning: true, reasoning_options: [{ type: 'effort', values: ['high'] }] },
+      },
+    },
+  }
+  const merged = mergeCanonicalModels(catalog, {
+    'acme/model-x': { id: 'acme/model-x', reasoning: true, limit: { context: 10, output: 5 } },
+  })
+
+  assert.equal(merged.acme.models['model-x'].reasoning_options, undefined)
+})
+
 test('a release stamp is not a different model family', async () => {
   const { metadataMatchForModel } = await loadMetadataHelpers()
   const metadata = {

@@ -568,6 +568,24 @@ window.__ModuleLoader__.load({
       return provider === undefined ? undefined : metadataModelRecord(providerId, metadataModelForVariants(provider.models, variants))
     }
 
+    // models.json records carry `reasoning: true` but never a level list, so a
+    // canonical-only record would lose the effort levels. Borrow the option list
+    // from a sibling record of the same model family inside the same provider;
+    // limits and modalities still come from the canonical record alone.
+    function canonicalReasoningOptions(models, modelId, model) {
+      if (model.reasoning !== true || Array.isArray(model.reasoning_options)) return {}
+      const wanted = modelIdShape(modelId)
+      if (wanted === '') return {}
+      for (const [key, sibling] of Object.entries(models)) {
+        if (sibling === null || typeof sibling !== 'object' || !Array.isArray(sibling.reasoning_options)) continue
+        const shapes = [key, sibling.name, canonicalModelId(sibling.canonical_model_id)].map(modelIdShape)
+        if (shapes.some(shape => shape !== '' && shapesRelate(shape, wanted))) {
+          return { reasoning_options: sibling.reasoning_options }
+        }
+      }
+      return {}
+    }
+
     // models.dev publishes a canonical registry (models.json, keyed "<lab>/<model>")
     // beside the per-provider catalog (api.json). The catalog lags the registry:
     // the DeepSeek lab lists deepseek-v4.1-flash, but the deepseek provider has no
@@ -590,7 +608,10 @@ window.__ModuleLoader__.load({
         merged[providerId] = {
           ...provider,
           id: typeof provider.id === 'string' && provider.id !== '' ? provider.id : providerId,
-          models: { ...models, [modelId]: { ...model, canonical: true } },
+          models: {
+            ...models,
+            [modelId]: { ...model, ...canonicalReasoningOptions(models, modelId, model), canonical: true },
+          },
         }
       }
       return merged
