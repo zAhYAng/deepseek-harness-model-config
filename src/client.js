@@ -1054,7 +1054,7 @@ window.__ModuleLoader__.load({
               },
             }, t('delete')),
           )) : null,
-        declared.length < EFFORTS.length ? h('div', { style: { display: 'flex', gap: '6px' } },
+        declared.length < EFFORTS.length ? h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
           h('select', { style: selectStyle, value: newLevel, disabled, onChange: event => setNewLevel(event.target.value) },
             h('option', { value: '' }, t('addLevel')),
             EFFORTS.filter(level => !declared.includes(level)).map(level => h('option', { key: level, value: level }, level)),
